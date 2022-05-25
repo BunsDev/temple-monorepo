@@ -1,18 +1,17 @@
 import "@nomiclabs/hardhat-ethers";
 import { ethers, network } from "hardhat";
 import {
-  OpsManager,
   OpsManager__factory,
-  OpsManagerLib,
-  OpsManagerLib__factory,
-  JoiningFee__factory
+  JoiningFee__factory,
+  InstantExitQueue__factory,
+  VaultProxy__factory,
+  TempleStaking__factory,
 } from "../../../typechain";
 import {
   deployAndMine,
   DEPLOYED_CONTRACTS,
   DeployedContracts,
   ensureExpectedEnvvars,
-  mine,
   toAtto
 } from "../helpers";
 
@@ -49,6 +48,27 @@ async function main() {
                 DEPLOYED.TEMPLE,
                 joiningFee.address
         )
+
+    const instantExitQueueFactory = await new InstantExitQueue__factory(owner);
+    const instantExitQueue = await deployAndMine("Instant Exit Queue",
+                instantExitQueueFactory,
+                instantExitQueueFactory.deploy,
+                DEPLOYED.STAKING,
+                DEPLOYED.TEMPLE
+    )
+
+    const templeStaking = await new TempleStaking__factory(owner).attach(DEPLOYED.STAKING);
+
+    const vaultProxyFactory = await new VaultProxy__factory(owner);
+    const vaultProxy = await deployAndMine("Vault Proxy",
+                vaultProxyFactory,
+                vaultProxyFactory.deploy,
+                await templeStaking.OG_TEMPLE(),
+                DEPLOYED.TEMPLE,
+                DEPLOYED.STAKING,
+                DEPLOYED.FAITH
+    )
+
 }
 
 // We recommend this pattern to be able to use async/await everywhere

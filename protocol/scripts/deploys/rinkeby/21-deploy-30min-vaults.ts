@@ -60,6 +60,7 @@ async function main() {
         const vaultAddr = await extractDeployedAddress(tx, "CreateVaultInstance");
         console.log(`Deployed vault ${name} with symbol ${symbol} at ${vaultAddr}`);
         console.log(`period: ${period}, window: ${window}, timestamp: ${ts}`);
+        console.log(`yarn hardhat verify --network rinkeby --constructor-args scripts/deploys/rinkeby/30-min-vault-verify/ts-30min-${suffix[i]}.js ${vaultAddr}`)
     }
 }
 
