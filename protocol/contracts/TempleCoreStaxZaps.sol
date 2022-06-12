@@ -4,6 +4,7 @@ pragma solidity ^0.8.4;
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "./ZapBaseV2_3.sol";
+import "hardhat/console.sol";
 
 interface IFaith {
   // User Faith total and usable balance
@@ -96,6 +97,7 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
   event ZappedInLP(address indexed sender, uint256 amountA, uint256 amountB, uint256 liquidity);
   event ZappedTemplePlusFaithInVault(address indexed sender, uint112 faithAmount, uint256 boostedAmount);
   event TokenRecovered(address to, uint256 amount);
+  event ZappedTempleInVault(address indexed sender, uint256 templeAmount);
 
   constructor(
     address _temple,
@@ -199,7 +201,7 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
     );
 
     amountTemple = _enterTemple(_stableToken, templeReceiver, stableAmountBought, minTempleReceived, ammDeadline);
-
+    // TODO: require templeAfter > templeBefore
     emit ZappedIn(msg.sender, amountTemple);
 
     return amountTemple;
@@ -220,8 +222,11 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
     uint256 _minTempleReceived,
     uint256 _ammDeadline
   ) internal returns (uint256 templeAmountReceived) {
+    uint256 templeBefore = IERC20(temple).balanceOf(address(this));
     _approveToken(_stableToken, address(templeRouter), _amountStable);
-
+    console.logString("Amount Stable");
+    console.logUint(_amountStable);
+    console.logUint(IERC20(temple).balanceOf(_templeReceiver));
     templeAmountReceived = templeRouter
       .swapExactStableForTemple(
         _amountStable,
@@ -230,6 +235,12 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
         _templeReceiver,
         _ammDeadline
       );
+    uint256 templeReceived = IERC20(temple).balanceOf(address(this)) - templeBefore;
+    require(templeReceived >= _minTempleReceived, "Not enough temple tokens received");
+    console.logString("Amount temple");
+    console.logUint(templeAmountReceived);
+    console.logUint(_minTempleReceived);
+    console.logUint(IERC20(temple).balanceOf(_templeReceiver));
   }
 
   function _fillQuote(
@@ -317,6 +328,38 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
     IVault(_vault).depositFor(msg.sender, boostedAmount);
 
     emit ZappedTemplePlusFaithInVault(msg.sender, faithAmount, boostedAmount);
+  }
+
+  function zapInVault(
+    address _fromToken,
+    uint256 _fromAmount,
+    uint256 _minTempleReceived,
+    address _stableToken,
+    address _vault,
+    address _swapTarget,
+    bytes calldata _swapData
+  ) external whenNotPaused {
+    require(supportedStables[_stableToken], "Unsupported stable token");
+    uint256 templeBefore = IERC20(temple).balanceOf(address(this));
+    _zapIn(
+      _fromToken,
+      _fromAmount,
+      _minTempleReceived,
+      DEADLINE,
+      _stableToken,
+      address(this),
+      _swapTarget,
+      _swapData
+    );
+
+    uint256 templeReceived = IERC20(temple).balanceOf(address(this)) - templeBefore;
+    require(templeReceived >= _minTempleReceived, "Not enough temple received");
+
+    // approve and deposit for user
+    _approveToken(temple, _vault, templeReceived);
+    IVault(_vault).depositFor(msg.sender, templeReceived);
+
+    emit ZappedTempleInVault(msg.sender, templeReceived);
   }
 
   function zapInLP(
