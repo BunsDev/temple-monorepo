@@ -201,7 +201,7 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
     );
 
     amountTemple = _enterTemple(_stableToken, templeReceiver, stableAmountBought, minTempleReceived, ammDeadline);
-    // TODO: require templeAfter > templeBefore
+
     emit ZappedIn(msg.sender, amountTemple);
 
     return amountTemple;
@@ -314,7 +314,8 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
         swapData
       );
     }
-    
+    console.logString("zapTempleFaithInVault: Received temple");
+    console.logUint(receivedTempleAmount);
     // using user's total available faith
     uint112 faithAmount = (faith.balances(msg.sender)).usableFaith;
     faith.redeem(msg.sender, faithAmount);
@@ -322,6 +323,7 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
     // approve boosted amount
     // note: requires this contract is prefunded to account for boost amounts, similar to vault proxy
     uint256 boostedAmount = vaultProxy.getFaithMultiplier(faithAmount, receivedTempleAmount);
+    require(boostedAmount <= IERC20(temple).balanceOf(address(this)));
     _approveToken(temple, _vault, boostedAmount);
 
     // deposit for user
