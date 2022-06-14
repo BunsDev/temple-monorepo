@@ -143,7 +143,7 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
     bool[] calldata _supported
   ) external onlyOwner {
     uint _length = _stables.length;
-    require(_supported.length == _length, "Invalid length");
+    require(_supported.length == _length, "Invalid Input length");
     for (uint i=0; i<_length; i++) {
       supportedStables[_stables[i]] = _supported[i];
     }
@@ -166,6 +166,7 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
     address swapTarget,
     bytes calldata swapData
   ) external payable whenNotPaused returns (uint256 amountTemple) {
+    require(permittableTokens[fromToken] == true, "Zaps unsupported for this token");
     amountTemple = _zapIn(
       fromToken,
       fromAmount,
@@ -253,16 +254,7 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
     if (supportedStables[_fromToken]) {
       return _amount;
     }
-
-    /*if (_swapTarget == WETH) {
-      require(
-          _amount > 0 && msg.value == _amount,
-          "Invalid _amount: Input ETH mismatch"
-      );
-      IWETH(WETH).deposit{value: _amount}();
-      return _amount;
-    }*/
-
+    
     uint256 valueToSend;
     if (_fromToken == address(0)) {
         require(
@@ -341,6 +333,7 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
     address _swapTarget,
     bytes calldata _swapData
   ) external whenNotPaused {
+    require(permittableTokens[_fromToken] == true, "Zaps unsupported for this token");
     require(supportedStables[_stableToken], "Unsupported stable token");
     uint256 templeBefore = IERC20(temple).balanceOf(address(this));
     _zapIn(
@@ -371,6 +364,7 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
     address _swapTarget,
     bytes memory _swapData
   ) external whenNotPaused {
+    require(permittableTokens[_fromToken] == true, "Zaps unsupported for this token");
     require(supportedStables[_stableToken], "Unsupported stable token");
     // pull tokens
     _pullTokens(_fromToken, _fromAmount);
@@ -403,7 +397,7 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
     if (_fromAddress != token0 && _fromAddress != token1) {
       // swap to intermediate. uses stable token
       intermediateToken = _stableToken;
-      intermediateAmount = _fillQuote( // perhaps add a stableToken argument? so that it can handle both frax and fei
+      intermediateAmount = _fillQuote(
         _fromAddress,
         _fromAmount,
         _stableToken,
@@ -414,48 +408,21 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
         intermediateToken = _fromAddress;
         intermediateAmount = _fromAmount;
     }
-
-    // divide intermediate into appropriate amount to add liquidity
-    /*(uint256 token0Bought, uint256 token1Bought) = _swapIntermediate(
-      intermediateToken,
-      _ToUniswapToken0,
-      _ToUniswapToken1,
-      intermediateAmt,
-      _uniswapRouter
-    );*/
-    // divide token into 2 and swap other half. making sure there's no residual tokens
-    // at this point, intermediate token could be temple or frax
-    /*uint256 intermediateAmountToSwap = intermediateAmount / 2;
-    unchecked {
-      intermediateAmount -= intermediateAmountToSwap;
-    }
-    uint256 amountOut;
-    uint256 amountA;
-    uint256 amountB;
-    {
-      if (intermediateToken == temple) {
-      (,uint256 otherTokenAmountOutMin) = templeRouter.swapExactTempleForStableQuote(pair, intermediateAmountToSwap);
-      _approveToken(temple, address(templeRouter), intermediateAmountToSwap);
-      amountOut = templeRouter.swapExactTempleForStable(intermediateAmountToSwap, otherTokenAmountOutMin, _stableToken, address(this), DEADLINE); // always FRAX? when to use stableToken argument above?
-      amountA = token0 == _stableToken ? amountOut : intermediateAmount;
-      amountB = token0 == _stableToken ? intermediateAmount : amountOut; 
-      } else if (intermediateToken == _stableToken) {
-        intermediateAmountToSwap = intermediateAmount / 2;
-        intermediateAmount -= intermediateAmountToSwap;
-        uint256 otherTokenAmountOutMin = templeRouter.swapExactStableForTempleQuote(pair, intermediateAmountToSwap);
-        _approveToken(_stableToken, address(templeRouter), intermediateAmountToSwap);
-        amountOut = templeRouter.swapExactStableForTemple(intermediateAmountToSwap, otherTokenAmountOutMin, _stableToken, address(this), DEADLINE);
-        amountA = token0 == _stableToken ? intermediateAmount : amountOut;
-        amountB = token0 == _stableToken ? amountOut : intermediateAmount;
-      } else {
-        revert("Unsupported token for LP addition");
-      }
-    }*/
-
+    console.logString("IntermediateToken, IntermediateAmount");
+    console.logAddress(intermediateToken);
+    console.logUint(intermediateAmount);
+  
     (uint256 amountA, uint256 amountB) = _swapTokens(pair, _stableToken, intermediateToken, intermediateAmount);
-    
+    console.log("After swapping tokens: amount A, B");
+    console.logUint(amountA);
+    console.logUint(amountB);
+
+    _approveToken(token1, address(templeRouter), amountB);
+    _approveToken(token0, address(templeRouter), amountA);
+
     // add LP
     _addLiquidity(_stableToken, pair, _liquidityReceiver, amountA, amountB);
+
   }
 
   function _swapTokens(
@@ -464,6 +431,8 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
     address _intermediateToken,
     uint256 _intermediateAmount
   ) internal returns (uint256 amountA, uint256 amountB) {
+    // divide token into 2 and swap other half. making sure there's no residual tokens
+    // at this point, intermediate token could be temple or frax
     address token0 = IUniswapV2Pair(_pair).token0();
     uint256 intermediateAmountToSwap = _intermediateAmount / 2;
     unchecked {
@@ -473,20 +442,22 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
     if (_intermediateToken == temple) {
       (,uint256 otherTokenAmountOutMin) = templeRouter.swapExactTempleForStableQuote(_pair, intermediateAmountToSwap);
       _approveToken(temple, address(templeRouter), intermediateAmountToSwap);
-      amountOut = templeRouter.swapExactTempleForStable(intermediateAmountToSwap, otherTokenAmountOutMin, _stableToken, address(this), DEADLINE); // always FRAX? when to use stableToken argument above?
+      console.log("Intermediate amount to swap");
+      console.logUint(intermediateAmountToSwap);
+      amountOut = templeRouter.swapExactTempleForStable(intermediateAmountToSwap, otherTokenAmountOutMin, _stableToken, address(this), DEADLINE);
       amountA = token0 == _stableToken ? amountOut : _intermediateAmount;
-      amountB = token0 == _stableToken ? _intermediateAmount : amountOut; 
-      } else if (_intermediateToken == _stableToken) {
-        intermediateAmountToSwap = _intermediateAmount / 2;
-        _intermediateAmount -= intermediateAmountToSwap;
-        uint256 otherTokenAmountOutMin = templeRouter.swapExactStableForTempleQuote(_pair, intermediateAmountToSwap);
-        _approveToken(_stableToken, address(templeRouter), intermediateAmountToSwap);
-        amountOut = templeRouter.swapExactStableForTemple(intermediateAmountToSwap, otherTokenAmountOutMin, _stableToken, address(this), DEADLINE);
-        amountA = token0 == _stableToken ? _intermediateAmount : amountOut;
-        amountB = token0 == _stableToken ? amountOut : _intermediateAmount;
-      } else {
-        revert("Unsupported token for LP addition");
-      }
+      amountB = token0 == _stableToken ? _intermediateAmount : amountOut;
+    } else if (_intermediateToken == _stableToken) {
+      uint256 otherTokenAmountOutMin = templeRouter.swapExactStableForTempleQuote(_pair, intermediateAmountToSwap);
+      _approveToken(_stableToken, address(templeRouter), intermediateAmountToSwap);
+      console.log("Intermediate amount to swap, stable");
+      console.logUint(intermediateAmountToSwap);
+      amountOut = templeRouter.swapExactStableForTemple(intermediateAmountToSwap, otherTokenAmountOutMin, _stableToken, address(this), DEADLINE);
+      amountA = token0 == _stableToken ? _intermediateAmount : amountOut;
+      amountB = token0 == _stableToken ? amountOut : _intermediateAmount;
+    } else {
+      revert("Unsupported token for LP addition");
+    }
   }
 
   function _addLiquidity(
@@ -498,6 +469,11 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
   ) internal {
     // get minimum amounts to use in liquidity addition. use optimal amounts as minimum
     (uint256 amountAMin, uint256 amountBMin) = _addLiquidityGetMinAmounts(_amountA, _amountB, IUniswapV2Pair(_pair));
+    console.logString("Add liquidity min amounts");
+    console.logUint(amountAMin);
+    console.logUint(amountBMin);
+    console.logUint(_amountA);
+    console.logUint(_amountB);
     (uint256 amountA, uint256 amountB, uint256 liquidity) = templeRouter.addLiquidity(
       _amountA,
       _amountB,
@@ -508,6 +484,24 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
       DEADLINE
     );
 
+    // transfer residual
+    bool token0IsTemple = IUniswapV2Pair(_pair).token0() == temple;
+    if (_amountA > amountA) {
+      if (token0IsTemple) {
+        _transferToken(IERC20(temple), _liquidityReceiver, _amountA - amountA);
+      } else {
+        _transferToken(IERC20(_stableToken), _liquidityReceiver, _amountA - amountA);
+      }
+    }
+
+    if (_amountB > amountB) {
+      if (token0IsTemple) {
+        _transferToken(IERC20(_stableToken), _liquidityReceiver, _amountB - amountB);
+      } else {
+        _transferToken(IERC20(temple), _liquidityReceiver, _amountB - amountB);
+      }
+    }
+  
     emit ZappedInLP(_liquidityReceiver, amountA, amountB, liquidity);
   }
 
