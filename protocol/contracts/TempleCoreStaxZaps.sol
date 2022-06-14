@@ -76,13 +76,9 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
   bool public faithClaimEnabled;
   
   address public constant FRAX = 0x853d955aCEf822Db058eb8505911ED77F175b99e;
-  //address public constant WETH = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
   //address public constant TEMPLE = 0x470EBf5f030Ed85Fc1ed4C2d36B9DD02e77CF1b7;
-  //address public constant OGTemple = 0x654590F810f01B51dc7B86915D4632977e49EA33;
-  address public ogTemple;
   address public immutable temple;
   IFaith public faith; //0x78F683247cb2121B4eBfbD04110760da42752a6B
-  //ILockedOGTemple public lockedOgTemple; // 0x879B843868dA248B1F2F53b4f8CC6e17e7E8b949
   ITempleStableRouter public templeRouter;
   IVaultProxy public vaultProxy;
 
@@ -254,7 +250,7 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
     if (supportedStables[_fromToken]) {
       return _amount;
     }
-    
+
     uint256 valueToSend;
     if (_fromToken == address(0)) {
         require(
@@ -288,6 +284,7 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
     address swapTarget,
     bytes calldata swapData
   ) external payable whenNotPaused {
+    require(permittableTokens[fromToken] == true, "Zaps unsupported for this token");
     require(faithClaimEnabled, "VaultProxy: Faith claim no longer enabled");
     // pull temple
     uint256 receivedTempleAmount;

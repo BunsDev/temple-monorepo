@@ -108,6 +108,9 @@ describe("Temple Stax Core Zaps", async () => {
       const currentState = await templeZaps.faithClaimEnabled();
       await templeZaps.toggleFaithClaimEnabled();
       expect(await templeZaps.faithClaimEnabled()).to.eq(!currentState);
+      await shouldThrow(templeZaps.zapTempleFaithInVault(
+        await alice.getAddress(), FRAX, 100, 10, FRAX, ZEROEX_EXCHANGE_PROXY, "0x"),
+        /VaultProxy: Faith claim no longer enabled/);
     });
 
     it("toggles contract active", async () => {
@@ -255,8 +258,6 @@ describe("Temple Stax Core Zaps", async () => {
       const bnbToken = IERC20__factory.connect(tokenAddr, bnbWhale);
       await bnbToken.transfer(await alice.getAddress(), ethers.utils.parseEther(tokenAmount));
 
-      //await deployVault()
-
       await zapInVault(
         alice,
         templeZaps,
@@ -265,6 +266,11 @@ describe("Temple Stax Core Zaps", async () => {
         minTempleReceived,
         vault.address
       );
+    });
+
+    it("should zap to temple+faith", async () => {
+      
+      
     });
   });
 
