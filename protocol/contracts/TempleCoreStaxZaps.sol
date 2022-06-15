@@ -1,8 +1,6 @@
 pragma solidity ^0.8.4;
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
 import "./ZapBaseV2_3.sol";
 import "hardhat/console.sol";
 
@@ -67,18 +65,14 @@ interface IUniswapV2Pair {
   function getReserves() external view returns (uint112, uint112, uint32);
 }
 
-/*interface IWETH {
-  function deposit() external payable;
-}*/
 
 contract TempleCoreStaxZaps is ZapBaseV2_3 {
 
   bool public faithClaimEnabled;
   
   address public constant FRAX = 0x853d955aCEf822Db058eb8505911ED77F175b99e;
-  //address public constant TEMPLE = 0x470EBf5f030Ed85Fc1ed4C2d36B9DD02e77CF1b7;
   address public immutable temple;
-  IFaith public faith; //0x78F683247cb2121B4eBfbD04110760da42752a6B
+  IFaith public faith;
   ITempleStableRouter public templeRouter;
   IVaultProxy public vaultProxy;
 
@@ -92,7 +86,7 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
   event TempleRouterSet(address router);
   event ZappedInLP(address indexed sender, uint256 amountA, uint256 amountB, uint256 liquidity);
   event ZappedTemplePlusFaithInVault(address indexed sender, uint112 faithAmount, uint256 boostedAmount);
-  event TokenRecovered(address to, uint256 amount);
+  event TokenRecovered(address token, address to, uint256 amount);
   event ZappedTempleInVault(address indexed sender, uint256 templeAmount);
 
   constructor(
@@ -110,18 +104,27 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
   }
 
   /**
-    * Toggle whether faith is claimable
+    * @dev Toggle whether faith is claimable
     */
   function toggleFaithClaimEnabled() external onlyOwner {
     faithClaimEnabled = !faithClaimEnabled;
   }
 
+  /**
+   * @dev set temple router
+   * @param _router router to set
+   */
   function setTempleRouter(address _router) external onlyOwner {
     templeRouter = ITempleStableRouter(_router);
 
     emit TempleRouterSet(_router);
   }
 
+  /**
+   * @dev set permittable tokens
+   * @param _tokens tokens to permit
+   * @param _isPermittable to permit or not
+   */
   function setPermittableTokens(
     address[] calldata _tokens,
     bool[] calldata _isPermittable
@@ -134,6 +137,31 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
     }
   }
 
+  /**
+   * @notice recover token or ETH
+   * @param _token token to recover
+   * @param _to receiver of recovered token
+   * @param _amount amount to recover
+   */
+  function recoverToken(address _token, address _to, uint256 _amount) external onlyOwner {
+    require(_to != address(0), "Invalid receiver");
+    if (_token == address(0)) {
+      // this is effectively how OpenZeppelin transfers eth
+      require(address(this).balance >= _amount, "Address: insufficient balance");
+      (bool success,) = _to.call{value: _amount}(""); 
+      require(success, "Address: unable to send value");
+    } else {
+      _transferToken(IERC20(_token), _to, _amount);
+    }
+    
+    emit TokenRecovered(_token, _to, _amount);
+  }
+
+  /**
+   * set supported stables. by default these are the stable amm supported stable tokens
+   * @param _stables stable tokens to permit
+   * @param _supported to support or not
+   */
   function setSupportedStables(
     address[] calldata _stables,
     bool[] calldata _supported
@@ -173,6 +201,135 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
       swapTarget,
       swapData
     );
+  }
+
+  /**
+   * @notice zap to temple and deposit in vault
+   * @param _fromToken token to zap from
+   * @param _fromAmount amount of fromToken to zap
+   * @param _stableToken stable token
+   * @param _swapTarget target to execute swap data
+   * @param _swapData swap data to execute
+   */
+  function zapInLP(
+    address _fromToken,
+    uint256 _fromAmount,
+    address _stableToken,
+    address _swapTarget,
+    bytes memory _swapData
+  ) external payable whenNotPaused {
+    require(permittableTokens[_fromToken] == true, "Zaps unsupported for this token");
+    require(supportedStables[_stableToken], "Unsupported stable token");
+    // pull tokens
+    _pullTokens(_fromToken, _fromAmount);
+
+    _performZapInLP(
+      _fromToken,
+      _fromAmount,
+      _stableToken,
+      msg.sender,
+      _swapTarget,
+      _swapData
+    );
+  }
+
+  /**
+   * @notice zap to temple and deposit in vault
+   * @param _fromToken token to zap from
+   * @param _fromAmount amount of fromToken to zap
+   * @param _minTempleReceived The minimum acceptable quantity of TEMPLE to receive
+   * @param _stableToken stable token 
+   * @param _vault deposit vault
+   * @param _swapTarget target to execute swap data
+   * @param _swapData swap data to execute
+   */
+  function zapInVault(
+    address _fromToken,
+    uint256 _fromAmount,
+    uint256 _minTempleReceived,
+    address _stableToken,
+    address _vault,
+    address _swapTarget,
+    bytes calldata _swapData
+  ) external payable whenNotPaused {
+    require(permittableTokens[_fromToken] == true, "Zaps unsupported for this token");
+    require(supportedStables[_stableToken], "Unsupported stable token");
+    uint256 templeBefore = IERC20(temple).balanceOf(address(this));
+    _zapIn(
+      _fromToken,
+      _fromAmount,
+      _minTempleReceived,
+      DEADLINE,
+      _stableToken,
+      address(this),
+      _swapTarget,
+      _swapData
+    );
+
+    uint256 templeReceived = IERC20(temple).balanceOf(address(this)) - templeBefore;
+    require(templeReceived >= _minTempleReceived, "Not enough temple received");
+
+    // approve and deposit for user
+    _approveToken(temple, _vault, templeReceived);
+    IVault(_vault).depositFor(msg.sender, templeReceived);
+
+    emit ZappedTempleInVault(msg.sender, templeReceived);
+  }
+
+  /**
+   * @notice zap to temple+faith and deposit in vault
+   * @param vault vault to deposit
+   * @param fromToken token to zap from
+   * @param fromAmount amount of fromToken to zap
+   * @param minTempleReceived The minimum acceptable quantity of TEMPLE to receive
+   * @param stableToken stable token 
+   * @param swapTarget target to execute swap data
+   * @param swapData swap data to execute
+   */
+  function zapTempleFaithInVault(
+    address vault,
+    address fromToken,
+    uint256 fromAmount,
+    uint256 minTempleReceived,
+    address stableToken,
+    address swapTarget,
+    bytes calldata swapData
+  ) external payable whenNotPaused {
+    require(permittableTokens[fromToken] == true, "Zaps unsupported for this token");
+    require(faithClaimEnabled, "VaultProxy: Faith claim no longer enabled");
+    // pull temple
+    uint256 receivedTempleAmount;
+    if (fromToken == temple) {
+      _pullTokens(temple, fromAmount);
+      receivedTempleAmount = fromAmount;
+    } else {
+      receivedTempleAmount = _zapIn(
+        fromToken,
+        fromAmount,
+        minTempleReceived,
+        DEADLINE,
+        stableToken,
+        address(this),
+        swapTarget,
+        swapData
+      );
+    }
+    console.logString("zapTempleFaithInVault: Received temple");
+    console.logUint(receivedTempleAmount);
+    // using user's total available faith
+    uint112 faithAmount = (faith.balances(msg.sender)).usableFaith;
+    faith.redeem(msg.sender, faithAmount);
+
+    // approve boosted amount
+    // note: requires this contract is prefunded to account for boost amounts, similar to vault proxy
+    uint256 boostedAmount = vaultProxy.getFaithMultiplier(faithAmount, receivedTempleAmount);
+    require(boostedAmount <= IERC20(temple).balanceOf(address(this)));
+    _approveToken(temple, vault, boostedAmount);
+
+    // deposit for user
+    IVault(vault).depositFor(msg.sender, boostedAmount);
+
+    emit ZappedTemplePlusFaithInVault(msg.sender, faithAmount, boostedAmount);
   }
 
   function _zapIn(
@@ -235,6 +392,7 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
     // stableswap amm router has a shadowed declaration and so no value is returned after swapExactStableForTemple
     // using calculation below instead
     templeAmountReceived = IERC20(temple).balanceOf(address(this)) - templeBefore;
+    console.logUint(templeAmountReceived);
     require(templeAmountReceived >= _minTempleReceived, "Not enough temple tokens received");
     console.logString("Amount temple");
     console.logUint(templeAmountReceived);
@@ -275,108 +433,6 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
       amountBought = _getBalance(_stableToken) - initialBalance;
     }
     require(amountBought > 0, "Swapped To Invalid Token");
-  }
-
-  function zapTempleFaithInVault(
-    address _vault,
-    address fromToken,
-    uint256 fromAmount,
-    uint256 minTempleReceived,
-    address stableToken,
-    address swapTarget,
-    bytes calldata swapData
-  ) external payable whenNotPaused {
-    require(permittableTokens[fromToken] == true, "Zaps unsupported for this token");
-    require(faithClaimEnabled, "VaultProxy: Faith claim no longer enabled");
-    // pull temple
-    uint256 receivedTempleAmount;
-    if (fromToken == temple) {
-      _pullTokens(temple, fromAmount);
-      receivedTempleAmount = fromAmount;
-    } else {
-      receivedTempleAmount = _zapIn(
-        fromToken,
-        fromAmount,
-        minTempleReceived,
-        DEADLINE,
-        stableToken,
-        address(this),
-        swapTarget,
-        swapData
-      );
-      console.logString("ENtered");
-    }
-    console.logString("zapTempleFaithInVault: Received temple");
-    console.logUint(receivedTempleAmount);
-    // using user's total available faith
-    uint112 faithAmount = (faith.balances(msg.sender)).usableFaith;
-    faith.redeem(msg.sender, faithAmount);
-
-    // approve boosted amount
-    // note: requires this contract is prefunded to account for boost amounts, similar to vault proxy
-    uint256 boostedAmount = vaultProxy.getFaithMultiplier(faithAmount, receivedTempleAmount);
-    require(boostedAmount <= IERC20(temple).balanceOf(address(this)));
-    _approveToken(temple, _vault, boostedAmount);
-
-    // deposit for user
-    IVault(_vault).depositFor(msg.sender, boostedAmount);
-
-    emit ZappedTemplePlusFaithInVault(msg.sender, faithAmount, boostedAmount);
-  }
-
-  function zapInVault(
-    address _fromToken,
-    uint256 _fromAmount,
-    uint256 _minTempleReceived,
-    address _stableToken,
-    address _vault,
-    address _swapTarget,
-    bytes calldata _swapData
-  ) external whenNotPaused {
-    require(permittableTokens[_fromToken] == true, "Zaps unsupported for this token");
-    require(supportedStables[_stableToken], "Unsupported stable token");
-    uint256 templeBefore = IERC20(temple).balanceOf(address(this));
-    _zapIn(
-      _fromToken,
-      _fromAmount,
-      _minTempleReceived,
-      DEADLINE,
-      _stableToken,
-      address(this),
-      _swapTarget,
-      _swapData
-    );
-
-    uint256 templeReceived = IERC20(temple).balanceOf(address(this)) - templeBefore;
-    require(templeReceived >= _minTempleReceived, "Not enough temple received");
-
-    // approve and deposit for user
-    _approveToken(temple, _vault, templeReceived);
-    IVault(_vault).depositFor(msg.sender, templeReceived);
-
-    emit ZappedTempleInVault(msg.sender, templeReceived);
-  }
-
-  function zapInLP(
-    address _fromToken,
-    uint256 _fromAmount,
-    address _stableToken,
-    address _swapTarget,
-    bytes memory _swapData
-  ) external whenNotPaused {
-    require(permittableTokens[_fromToken] == true, "Zaps unsupported for this token");
-    require(supportedStables[_stableToken], "Unsupported stable token");
-    // pull tokens
-    _pullTokens(_fromToken, _fromAmount);
-
-    _performZapInLP(
-      _fromToken,
-      _fromAmount,
-      _stableToken,
-      msg.sender,
-      _swapTarget,
-      _swapData
-    );
   }
 
   function _performZapInLP(
@@ -422,7 +478,6 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
 
     // add LP
     _addLiquidity(_stableToken, pair, _liquidityReceiver, amountA, amountB);
-
   }
 
   function _swapTokens(
@@ -565,21 +620,6 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
           (amountA, amountB) = (amountAOptimal, amountBDesired);
       }
     }
-  }
-
-  // recover tokens
-  function recoverToken(address _token, address _to, uint256 _amount) external onlyOwner {
-    require(_to != address(0), "Invalid receiver");
-    if (_token == address(0)) {
-      // this is effectively how OpenZeppelin transfers eth
-      require(address(this).balance >= _amount, "Address: insufficient balance");
-      (bool success,) = _to.call{value: _amount}(""); 
-      require(success, "Address: unable to send value");
-    } else {
-      _transferToken(IERC20(_token), _to, _amount);
-    }
-    
-    emit TokenRecovered(_to, _amount);
   }
 
   function _transferToken(IERC20 _token, address _to, uint256 _amount) internal {
