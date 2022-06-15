@@ -5,12 +5,13 @@ import axios from 'axios';
 import { blockTimestamp, shouldThrow, toAtto } from "./helpers";
 import { DEPLOYED_CONTRACTS } from '../scripts/deploys/helpers';
 import addresses from "./constants";
-import { ERC20, ERC20__factory, Exposure, Exposure__factory, IERC20, IERC20__factory,
+import { ERC20, ERC20__factory, Exposure, Exposure__factory, Faith, Faith__factory, IERC20, IERC20__factory,
   JoiningFee,
   JoiningFee__factory,
   TempleCoreStaxZaps, TempleCoreStaxZaps__factory,
   TempleERC20Token,
   TempleERC20Token__factory,
+  TempleStableAMMRouter,
   TempleStableAMMRouter__factory,
   Vault, VaultedTemple, VaultedTemple__factory, VaultProxy, VaultProxy__factory, Vault__factory
 } from "../typechain";
@@ -30,6 +31,8 @@ let vaultedTemple: VaultedTemple;
 let templeToken: TempleERC20Token;
 let joiningFee: JoiningFee;
 let fraxToken: ERC20;
+let faith: Faith;
+let templeRouter: TempleStableAMMRouter;
 let owner: Signer;
 let alice: Signer;
 let ben: Signer;
@@ -241,11 +244,24 @@ describe("Temple Stax Core Zaps", async () => {
           joiningFee.address,
           await blockTimestamp()
       );
+
+      templeRouter = TempleStableAMMRouter__factory.connect(TEMPLE_STABLE_ROUTER, owner);
+
+      fraxToken = ERC20__factory.connect(FRAX, owner);
+
+      const multiSig = await impersonateAddress(MULTISIG);
+      faith = Faith__factory.connect(FAITH, multiSig);
       
       await templeExposure.setMinterState(vault.address, true);
       await templeExposure.setMinterState(await owner.getAddress(), true);
     
       await templeToken.connect(alice).increaseAllowance(vault.address, toAtto(1000000));
+
+      await faith.addManager(await owner.getAddress());
+      await faith.addManager(vaultProxy.address);
+      await faith.addManager(templeZaps.address);
+
+      await templeZaps.setPermittableTokens([TEMPLE], [true]);
     });
 
     it("should zap ERC20 tokens to Temple and deposit in vault", async () => {
@@ -268,9 +284,55 @@ describe("Temple Stax Core Zaps", async () => {
       );
     });
 
-    it("should zap to temple+faith", async () => {
-      
-      
+    it("temple+faith and deposit in vault", async () => {
+      // fund contract with some temple
+      const fundAmount = toAtto(1000);
+      await templeToken.transfer(templeZaps.address, fundAmount);
+      expect(await templeToken.balanceOf(templeZaps.address)).to.eq(fundAmount);
+
+      const fromToken = templeToken.address;
+      const fromAmount = toAtto(1000);
+      const feePerTempleScaledPerHour = await joiningFee.calc(await vault.firstPeriodStartTimestamp(), await vault.periodDuration(), vault.address);
+      const fee = fromAmount.mul(feePerTempleScaledPerHour).div(toAtto(1));
+
+      await zapInTempleFaith(
+        alice,
+        fundAmount,
+        fromAmount,
+        fromAmount,
+        fromToken,
+        fee
+      );
+    });
+
+    it.only("should zap to temple+faith and deposit in vault", async () => {
+      const fundAmount = toAtto(1000);
+      await templeToken.transfer(templeZaps.address, fundAmount);
+      expect(await templeToken.balanceOf(templeZaps.address)).to.eq(fundAmount);
+
+      const fromTokenAddress = FRAX;
+      const fromAmount = toAtto(1000);
+
+      // fund alice
+      const aliceAddress = await alice.getAddress();
+      await fraxToken.connect(fraxSigner).transfer(aliceAddress, fromAmount);
+      await fraxToken.connect(alice).increaseAllowance(templeZaps.address, fromAmount);
+
+      // use converted amount here as fromToken is not temple
+      const pair = await templeRouter.tokenPair(fromTokenAddress);
+      const expectedTemple = await templeRouter.swapExactStableForTempleQuote(pair, fromAmount);
+      const feePerTempleScaledPerHour = await joiningFee.calc(await vault.firstPeriodStartTimestamp(), await vault.periodDuration(), vault.address);
+      const fee = expectedTemple.mul(feePerTempleScaledPerHour).div(toAtto(1));
+      console.log(`Fee ${fee} ${feePerTempleScaledPerHour}`)
+
+      await zapInTempleFaith(
+        alice,
+        fundAmount,
+        fromAmount,
+        expectedTemple,
+        fromTokenAddress,
+        fee
+      );
     });
   });
 
@@ -290,7 +352,7 @@ describe("Temple Stax Core Zaps", async () => {
       await templeToken.connect(alice).increaseAllowance(templeZaps.address, toAtto(1000));
     });
 
-    it.only("adds LP after zapping part temple", async () => {
+    it("adds LP after zapping part temple", async () => {
       // using temple as from token
       const fromToken = TEMPLE;
       const fromAmount = ethers.utils.parseEther("100");
@@ -308,13 +370,55 @@ describe("Temple Stax Core Zaps", async () => {
       );
 
       // ensure no residual tokens
-      // TODO: maybe residual token only from fromToken. perhaps check and fix at calcAmountOutMin for LP in contract. also check pair.mint(to)
       expect(await fraxToken.balanceOf(templeZaps.address)).to.eq(zapsFraxBalBefore);
       expect(await templeToken.balanceOf(templeZaps.address)).to.eq(zapsTempleBalBefore);
     });
   });
   
 });
+
+async function zapInTempleFaith(
+  signer: Signer,
+  fundAmount: BigNumber,
+  fromAmount: BigNumber,
+  fromAmountInTemple: BigNumber,
+  fromTokenAddress: string,
+  fee: BigNumber
+) {
+  // get some faith for signer
+  const signerAddress = await signer.getAddress();
+  const faithAmount = 10000;
+  await faith.gain(signerAddress, faithAmount);
+  const signerFaithBalance = await faith.balances(signerAddress);
+  expect(signerFaithBalance.usableFaith).to.eq(faithAmount);
+
+  // zap temple+faith
+  const fromToken = ERC20__factory.connect(fromTokenAddress, signer);
+  const minTempleReceived = ethers.utils.parseUnits("1", 18).toString();
+
+  // boosted temple
+  const boostedAmount = await vaultProxy.getFaithMultiplier(faithAmount, fromAmountInTemple);
+
+  await fromToken.connect(signer).increaseAllowance(templeZaps.address, fromAmountInTemple);
+  await expect(templeZaps
+    .connect(signer)
+    .zapTempleFaithInVault(
+      vault.address,
+      fromToken.address,
+      fromAmount,
+      minTempleReceived,
+      FRAX,
+      ZEROEX_EXCHANGE_PROXY,
+      "0x"
+    ))
+    .to.emit(templeZaps, "ZappedTemplePlusFaithInVault")
+    .withArgs(signerAddress, faithAmount, boostedAmount);
+    
+  expect(await templeToken.balanceOf(templeZaps.address)).to.eq(fundAmount.sub(boostedAmount.sub(fromAmountInTemple)));
+  expect((await faith.balances(signerAddress)).usableFaith).to.eq(0);
+  expect(await vault.balanceOf(signerAddress)).to.eq(boostedAmount.sub(fee));
+  expect(await templeToken.balanceOf(vaultedTemple.address)).to.eq(boostedAmount);
+}
 
 async function airdropTemple(
   owner: Signer,
@@ -342,7 +446,6 @@ async function zapIn(
 ) {
   const tokenContract = IERC20__factory.connect(tokenAddr, signer);
   const templeToken = IERC20__factory.connect(TEMPLE, signer);
-  const templeRouter = TempleStableAMMRouter__factory.connect(TEMPLE_STABLE_ROUTER, signer);
   let symbol;
   let decimals;
   let sellToken;
@@ -459,7 +562,7 @@ async function zapInVault(
     decimals = await tokenContract.decimals();
     sellToken = tokenAddr;
   }
-  console.log("STSS", sellToken, tokenAddr)
+
   // Get TEMPLE balance before zap
   const signerAddress = await signer.getAddress();
   const balanceBefore = await getBalance(templeToken, signerAddress);
@@ -506,6 +609,10 @@ async function zapInVault(
     overrides.value = ethers.utils.parseEther(tokenAmount);
   }
 
+  const sellAmountBN = BigNumber.from(sellAmount);
+  const feePerTempleScaledPerHour = await joiningFee.calc(await vault.firstPeriodStartTimestamp(), await vault.periodDuration(), vault.address);
+  const fee = sellAmountBN.mul(feePerTempleScaledPerHour).div(toAtto(1));
+
   const vaultExposureTokenBefore = await templeExposure.balanceOf(vault.address);
   const vaultedTempleAmountBefore = await templeToken.balanceOf(vaultedTemple.address);
   await expect(zapsConnect.zapInVault(
@@ -521,9 +628,12 @@ async function zapInVault(
   console.log(`Exposure tokens before and after ${vaultExposureTokenBefore} ${await templeExposure.balanceOf(vault.address)}`);
   expect(await templeExposure.balanceOf(vault.address)).to.gte(vaultExposureTokenBefore.add(minTempleReceived));
   expect(await templeToken.balanceOf(vaultedTemple.address)).to.gte(vaultedTempleAmountBefore.add(minTempleReceived));
+  expect(await vault.balanceOf(aliceAddress)).to.eq(sellAmountBN.sub(fee));
+  expect(await templeToken.balanceOf(vaultedTemple.address)).to.eq(sellAmountBN);
 
   // Get Temple balance after zap
   const balanceAfter = await getBalance(templeToken, signerAddress);
+  expect(balanceAfter).to.gte(balanceBefore);
   console.log(`Ending Temple: ${ethers.utils.formatUnits(balanceAfter, 18)}`);
 }
 

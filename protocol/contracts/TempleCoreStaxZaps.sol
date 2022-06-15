@@ -184,7 +184,7 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
     address templeReceiver,
     address swapTarget,
     bytes calldata swapData
-  ) internal returns (uint256 amountTemple) {
+  ) internal returns (uint256) {
     require(supportedStables[_stableToken], "Unsupported stable token");
 
     _pullTokens(fromToken, fromAmount);
@@ -197,8 +197,8 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
       swapData
     );
 
-    amountTemple = _enterTemple(_stableToken, templeReceiver, stableAmountBought, minTempleReceived, ammDeadline);
-
+    uint256 amountTemple = _enterTemple(_stableToken, templeReceiver, stableAmountBought, minTempleReceived, ammDeadline);
+    
     emit ZappedIn(msg.sender, amountTemple);
 
     return amountTemple;
@@ -224,7 +224,7 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
     console.logString("Amount Stable");
     console.logUint(_amountStable);
     console.logUint(IERC20(temple).balanceOf(_templeReceiver));
-    templeAmountReceived = templeRouter
+    templeRouter
       .swapExactStableForTemple(
         _amountStable,
         _minTempleReceived,
@@ -232,8 +232,10 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
         _templeReceiver,
         _ammDeadline
       );
-    uint256 templeReceived = IERC20(temple).balanceOf(address(this)) - templeBefore;
-    require(templeReceived >= _minTempleReceived, "Not enough temple tokens received");
+    // stableswap amm router has a shadowed declaration and so no value is returned after swapExactStableForTemple
+    // using calculation below instead
+    templeAmountReceived = IERC20(temple).balanceOf(address(this)) - templeBefore;
+    require(templeAmountReceived >= _minTempleReceived, "Not enough temple tokens received");
     console.logString("Amount temple");
     console.logUint(templeAmountReceived);
     console.logUint(_minTempleReceived);
@@ -302,6 +304,7 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
         swapTarget,
         swapData
       );
+      console.logString("ENtered");
     }
     console.logString("zapTempleFaithInVault: Received temple");
     console.logUint(receivedTempleAmount);
@@ -428,7 +431,7 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
     address _intermediateToken,
     uint256 _intermediateAmount
   ) internal returns (uint256 amountA, uint256 amountB) {
-    // divide token into 2 and swap other half. making sure there's no residual tokens
+    // divide token and swap other half. making sure there's no residual tokens
     // at this point, intermediate token could be temple or frax
     address token0 = IUniswapV2Pair(_pair).token0();
     uint256 intermediateAmountToSwap = _intermediateAmount / 2;
