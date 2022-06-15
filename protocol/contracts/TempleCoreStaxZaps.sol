@@ -2,7 +2,6 @@ pragma solidity ^0.8.4;
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import "./ZapBaseV2_3.sol";
-import "hardhat/console.sol";
 
 interface IFaith {
   // User Faith total and usable balance
@@ -81,7 +80,6 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
   mapping(address => bool) public permittableTokens;
   mapping(address => bool) public supportedStables;
 
-  // Emitted when `sender` Zaps In
   event ZappedIn(address indexed sender, uint256 amountReceived);
   event TempleRouterSet(address router);
   event ZappedInLP(address indexed sender, uint256 amountA, uint256 amountB, uint256 liquidity);
@@ -314,8 +312,7 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
         swapData
       );
     }
-    console.logString("zapTempleFaithInVault: Received temple");
-    console.logUint(receivedTempleAmount);
+
     // using user's total available faith
     uint112 faithAmount = (faith.balances(msg.sender)).usableFaith;
     faith.redeem(msg.sender, faithAmount);
@@ -378,10 +375,7 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
   ) internal returns (uint256 templeAmountReceived) {
     uint256 templeBefore = IERC20(temple).balanceOf(address(this));
     _approveToken(_stableToken, address(templeRouter), _amountStable);
-    console.logString("Amount Stable");
-    console.logUint(_amountStable);
-    console.logUint(templeBefore);
-    console.logAddress(_stableToken);
+
     templeRouter
       .swapExactStableForTemple(
         _amountStable,
@@ -394,12 +388,7 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
     // using calculation below instead
     if (_templeReceiver == address(this)) {
       templeAmountReceived = IERC20(temple).balanceOf(address(this)) - templeBefore;
-      console.logUint(templeAmountReceived);
       require(templeAmountReceived >= _minTempleReceived, "Not enough temple tokens received");
-      console.logString("Amount temple");
-      console.logUint(templeAmountReceived);
-      console.logUint(_minTempleReceived);
-      console.logUint(IERC20(temple).balanceOf(_templeReceiver));
     }
   }
 
@@ -467,14 +456,8 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
         intermediateToken = _fromAddress;
         intermediateAmount = _fromAmount;
     }
-    console.logString("IntermediateToken, IntermediateAmount");
-    console.logAddress(intermediateToken);
-    console.logUint(intermediateAmount);
   
     (uint256 amountA, uint256 amountB) = _swapTokens(pair, _stableToken, intermediateToken, intermediateAmount);
-    console.log("After swapping tokens: amount A, B");
-    console.logUint(amountA);
-    console.logUint(amountB);
 
     _approveToken(token1, address(templeRouter), amountB);
     _approveToken(token0, address(templeRouter), amountA);
@@ -500,16 +483,14 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
     if (_intermediateToken == temple) {
       (,uint256 otherTokenAmountOutMin) = templeRouter.swapExactTempleForStableQuote(_pair, intermediateAmountToSwap);
       _approveToken(temple, address(templeRouter), intermediateAmountToSwap);
-      console.log("Intermediate amount to swap");
-      console.logUint(intermediateAmountToSwap);
+
       amountOut = templeRouter.swapExactTempleForStable(intermediateAmountToSwap, otherTokenAmountOutMin, _stableToken, address(this), DEADLINE);
       amountA = token0 == _stableToken ? amountOut : _intermediateAmount;
       amountB = token0 == _stableToken ? _intermediateAmount : amountOut;
     } else if (_intermediateToken == _stableToken) {
       uint256 otherTokenAmountOutMin = templeRouter.swapExactStableForTempleQuote(_pair, intermediateAmountToSwap);
       _approveToken(_stableToken, address(templeRouter), intermediateAmountToSwap);
-      console.log("Intermediate amount to swap, stable");
-      console.logUint(intermediateAmountToSwap);
+
       amountOut = templeRouter.swapExactStableForTemple(intermediateAmountToSwap, otherTokenAmountOutMin, _stableToken, address(this), DEADLINE);
       amountA = token0 == _stableToken ? _intermediateAmount : amountOut;
       amountB = token0 == _stableToken ? amountOut : _intermediateAmount;
@@ -527,11 +508,6 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
   ) internal {
     // get minimum amounts to use in liquidity addition. use optimal amounts as minimum
     (uint256 amountAMin, uint256 amountBMin) = _addLiquidityGetMinAmounts(_amountA, _amountB, IUniswapV2Pair(_pair));
-    console.logString("Add liquidity min amounts");
-    console.logUint(amountAMin);
-    console.logUint(amountBMin);
-    console.logUint(_amountA);
-    console.logUint(_amountB);
     (uint256 amountA, uint256 amountB, uint256 liquidity) = templeRouter.addLiquidity(
       _amountA,
       _amountB,
@@ -598,8 +574,7 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
     * Direct copy of UniswapV2Library.quote(amountA, reserveA, reserveB) - can't use as directly as it's built off a different version of solidity
     */
   function _quote(uint amountA, uint reserveA, uint reserveB) internal pure returns (uint amountB) {
-    //require(amountA > 0, 'UniswapV2Library: INSUFFICIENT_AMOUNT');
-    //require(reserveA > 0 && reserveB > 0, 'UniswapV2Library: INSUFFICIENT_LIQUIDITY');
+    require(reserveA > 0 && reserveB > 0, 'Insufficient liquidity');
     amountB = (amountA * reserveB) / reserveA;
   }
 
@@ -607,7 +582,7 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
     uint amountADesired,
     uint amountBDesired,
     IUniswapV2Pair pair
-  ) internal virtual returns (uint amountA, uint amountB) {
+  ) internal view returns (uint amountA, uint amountB) {
     (uint reserveA, uint reserveB,) = pair.getReserves();
     if (reserveA == 0 && reserveB == 0) {
       (amountA, amountB) = (amountADesired, amountBDesired);
