@@ -380,7 +380,8 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
     _approveToken(_stableToken, address(templeRouter), _amountStable);
     console.logString("Amount Stable");
     console.logUint(_amountStable);
-    console.logUint(IERC20(temple).balanceOf(_templeReceiver));
+    console.logUint(templeBefore);
+    console.logAddress(_stableToken);
     templeRouter
       .swapExactStableForTemple(
         _amountStable,
@@ -391,13 +392,15 @@ contract TempleCoreStaxZaps is ZapBaseV2_3 {
       );
     // stableswap amm router has a shadowed declaration and so no value is returned after swapExactStableForTemple
     // using calculation below instead
-    templeAmountReceived = IERC20(temple).balanceOf(address(this)) - templeBefore;
-    console.logUint(templeAmountReceived);
-    require(templeAmountReceived >= _minTempleReceived, "Not enough temple tokens received");
-    console.logString("Amount temple");
-    console.logUint(templeAmountReceived);
-    console.logUint(_minTempleReceived);
-    console.logUint(IERC20(temple).balanceOf(_templeReceiver));
+    if (_templeReceiver == address(this)) {
+      templeAmountReceived = IERC20(temple).balanceOf(address(this)) - templeBefore;
+      console.logUint(templeAmountReceived);
+      require(templeAmountReceived >= _minTempleReceived, "Not enough temple tokens received");
+      console.logString("Amount temple");
+      console.logUint(templeAmountReceived);
+      console.logUint(_minTempleReceived);
+      console.logUint(IERC20(temple).balanceOf(_templeReceiver));
+    }
   }
 
   function _fillQuote(
