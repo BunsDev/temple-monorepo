@@ -1,4 +1,4 @@
-# Temple Monorepo
+# Temple Monorepo Details
 
 ## Getting Started
 ### Requirements
